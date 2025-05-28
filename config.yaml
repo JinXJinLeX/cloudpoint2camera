@@ -1,8 +1,8 @@
-pointcloud_path: /media/seu/4000098A0009885C/datasets/seu/metacam/2025-05-13_15-36-44/cloud-points/
-image_path: /media/seu/4000098A0009885C/datasets/seu/metacam/2025-05-13_15-36-44/images/
-output_path: /media/seu/4000098A0009885C/datasets/seu/metacam/2025-05-13_15-36-44/results
-min_depth: 0.3
-max_depth: 30.0
+pointcloud_path: /path-to-your-data/cloud-points/
+image_path: /path-to-your-data/images/
+output_path: /path-to-your-data/results
+min_depth: 0.1
+max_depth: 50.0
 
 T_base_lidar_t_xyz_q_xyzw: [-0.011, -0.02329, 0.04412, 0.0, 0.0, 0.0, 1.0]
 cam0:
