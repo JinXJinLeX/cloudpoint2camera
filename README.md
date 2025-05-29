@@ -8,6 +8,6 @@ rosrun pcl_ros bag_to_pcd \
   /lidar-topic \
   /path-to-result/cloud-points
 
-Extracting pictures using extract_frame.py, save in .ros
+Extracting pictures using extract_frame.py.
 
 It requires camera intrinsic parameters and the transformation relationship with the lidar. It can match and project multiple point clouds and images in a folder at one time to generate a depth map.
