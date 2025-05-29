@@ -20,7 +20,7 @@ class ImageCreator():
     frames = -1  # 将frames设置为类变量
     def __init__(self):
         self.bridge = CvBridge()
-        with rosbag.Bag('/media/seu/4000098A0009885C/datasaets/fast-livo/hku1.bag', 'r') as bag:  # 要读取的bag文件；
+        with rosbag.Bag('/path-to-bag/data.bag', 'r') as bag:  # 要读取的bag文件；
             for topic, msg, t in bag.read_messages():
                 if topic == "/left_camera/image":  # 图像的topic；
                     try:
