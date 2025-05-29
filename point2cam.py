@@ -17,35 +17,59 @@ def load_calibration_from_yaml(yaml_path, camera_name):
     img_width, img_height = cam_params['width'], cam_params['height']
     return K_rect, T_cam_to_lidar, img_width, img_height
 
-def match_timestamps(pointcloud_dir, image_dir, max_time_diff=0.5):
-    """按时间戳匹配点云与图像文件"""
-    pcd_files = [f for f in os.listdir(pointcloud_dir) if f.endswith('.pcd')]
-    pcd_timestamps = [os.path.splitext(f)[0] for f in pcd_files]
+def match_timestamps(pointcloud_dir, image_dir, max_time_diff=1.0, debug=False):
+    """按时间戳匹配点云与图像文件，正确提取带小数的时间戳"""
+    # 正确提取时间戳：假设文件名格式为"时间戳.后缀"，例如"12345.678.jpg"
+    def extract_timestamp(filename):
+        # 分割文件名与扩展名（处理多级后缀，如.tar.gz）
+        name_without_ext = os.path.splitext(filename)[0]
+        # 时间戳可能包含小数点，因此直接使用完整的文件名作为时间戳（去除扩展名后）
+        return name_without_ext
     
-    cam0_imgs = {f.split('.')[0]: f for f in os.listdir(os.path.join(image_dir, 'cam0')) if f.endswith('.jpg')}
-    cam1_imgs = {f.split('.')[0]: f for f in os.listdir(os.path.join(image_dir, 'cam1')) if f.endswith('.jpg')}
+    # 加载所有文件并提取时间戳（保留完整字符串，包括小数）
+    pcd_files = {extract_timestamp(f): f for f in os.listdir(pointcloud_dir) if f.endswith('.pcd')}
+    cam0_imgs = {extract_timestamp(f): f for f in os.listdir(os.path.join(image_dir, 'cam0')) if f.endswith('.jpg')}
+    cam1_imgs = {extract_timestamp(f): f for f in os.listdir(os.path.join(image_dir, 'cam1')) if f.endswith('.jpg')}
+    
+    if debug:
+        print(f"点云时间戳示例: {next(iter(pcd_files.keys())) if pcd_files else None}")
+        print(f"相机0时间戳示例: {next(iter(cam0_imgs.keys())) if cam0_imgs else None}")
     
     matches = []
-    for ts in pcd_timestamps:
-        cam0_match = cam0_imgs.get(ts)
-        cam1_match = cam1_imgs.get(ts)
+    for pcd_ts_str in pcd_files:
+        pcd_ts_float = float(pcd_ts_str)
+        cam_ts_str = None
         
-        if not cam0_match:
-            ts_num = float(ts)
-            cam0_match = min(cam0_imgs.items(), key=lambda x: abs(float(x[0])-ts_num))[1] if cam0_imgs else None
+        # 1. 精确匹配（时间戳字符串完全一致）
+        if pcd_ts_str in cam0_imgs and pcd_ts_str in cam1_imgs:
+            cam_ts_str = pcd_ts_str
+            if debug:
+                print(f"精确匹配: {pcd_ts_str}")
         
-        if not cam1_match:
-            ts_num = float(ts)
-            cam1_match = min(cam1_imgs.items(), key=lambda x: abs(float(x[0])-ts_num))[1] if cam1_imgs else None
+        # 2. 最近邻匹配（允许时间差≤max_time_diff）
+        else:
+            common_timestamps = set(cam0_imgs.keys()) & set(cam1_imgs.keys())
+            if common_timestamps:
+                # 转换为浮点数进行比较，保留原始字符串
+                nearest_ts_str = min(common_timestamps, 
+                                    key=lambda x: abs(float(x) - pcd_ts_float))
+                diff = abs(float(nearest_ts_str) - pcd_ts_float)
+                if diff <= max_time_diff:
+                    cam_ts_str = nearest_ts_str
+                    if debug:
+                        print(f"最近邻匹配: {pcd_ts_str} → {nearest_ts_str} (diff={diff:.6f}s)")
         
-        if cam0_match and cam1_match:
+        # 3. 仅当匹配有效时添加结果
+        if cam_ts_str:
             matches.append({
-                'pcd_path': os.path.join(pointcloud_dir, f"{ts}.pcd"),
-                'cam0_img': os.path.join(image_dir, 'cam0', cam0_match),
-                'cam1_img': os.path.join(image_dir, 'cam1', cam1_match),
-                'timestamp': ts
+                'pcd_path': os.path.join(pointcloud_dir, pcd_files[pcd_ts_str]),
+                'cam0_img': os.path.join(image_dir, 'cam0', cam0_imgs[cam_ts_str]),
+                'cam1_img': os.path.join(image_dir, 'cam1', cam1_imgs[cam_ts_str]),
+                'pcd_timestamp': pcd_ts_str,
+                'cam_timestamp': cam_ts_str
             })
     return matches
+
 
 def transform_torch(points_3d, T):
     """坐标变换：应用变换矩阵 T（输入点云坐标系 → 输出点云坐标系）"""
@@ -96,6 +120,9 @@ def main():
     min_depth = config['min_depth']
     max_depth = config['max_depth']
     
+    # 启用调试模式以查看时间戳匹配情况
+    debug_mode = True
+    
     # 创建输出目录
     os.makedirs(os.path.join(output_path, 'colored-cloud-points'), exist_ok=True)
     os.makedirs(os.path.join(output_path, 'depth-images/cam0'), exist_ok=True)
@@ -109,14 +136,23 @@ def main():
     cam0_K_torch = torch.tensor(cam0_K, dtype=torch.float32).to('cuda')
     cam1_K_torch = torch.tensor(cam1_K, dtype=torch.float32).to('cuda')
     
-    matches = match_timestamps(pointcloud_dir, image_dir)
+    matches = match_timestamps(pointcloud_dir, image_dir, debug=debug_mode)
     print(f"找到 {len(matches)} 对匹配的点云与图像")
     
     for match in tqdm(matches, desc="Processing"):
-        ts = match['timestamp']
+        pcd_ts = match['pcd_timestamp']  # 点云时间戳（字符串格式）
+        cam_ts = match['cam_timestamp']  # 图像时间戳（字符串格式）
         pcd_path = match['pcd_path']
         cam0_img_path = match['cam0_img']
         cam1_img_path = match['cam1_img']
+        
+        if debug_mode:
+            print(f"\n处理数据对:")
+            print(f"  点云时间戳: {pcd_ts}")
+            print(f"  图像时间戳: {cam_ts}")
+            print(f"  点云路径: {pcd_path}")
+            print(f"  相机0图像路径: {cam0_img_path}")
+            print(f"  相机1图像路径: {cam1_img_path}")
         
         # 加载雷达点云（雷达坐标系）
         pcd = o3d.io.read_point_cloud(pcd_path)
@@ -163,28 +199,31 @@ def main():
         colored_points[~valid0 & valid1] = rgb1_cpu[valid1 & ~valid0]
         
         # --------------------------- 保存结果 ---------------------------
-        # 保存彩色点云
+        # 保存彩色点云（文件名与原始点云一致）
+        colored_pcd_path = os.path.join(output_path, 'colored-cloud-points', f"{pcd_ts}.pcd")
         pcd_colored = o3d.geometry.PointCloud()
         pcd_colored.points = o3d.utility.Vector3dVector(points_lidar_np)
         pcd_colored.colors = o3d.utility.Vector3dVector(colored_points[:, :3])
-        o3d.io.write_point_cloud(
-            os.path.join(output_path, 'colored-cloud-points', f"{ts}.pcd"),
-            pcd_colored
-        )
+        o3d.io.write_point_cloud(colored_pcd_path, pcd_colored)
         
-        # 保存灰度深度图（移除彩色映射，直接保存单通道图像）
-        def save_gray_depth(depth_map, cam_name, ts):
+        if debug_mode:
+            print(f"  保存彩色点云: {colored_pcd_path}")
+        
+        # 保存灰度深度图（文件名与对应图像一致）
+        def save_gray_depth(depth_map, cam_name):
             depth_np = depth_map.cpu().numpy()
             depth_np[depth_np == torch.inf] = 0  # 无效深度设为0
             normalized = cv2.normalize(depth_np, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-            cv2.imwrite(
-                os.path.join(output_path, f'depth-images/{cam_name}', f"{ts}.png"),
-                normalized
-            )
+            
+            # 构建输出路径，使用原始图像的时间戳
+            depth_img_path = os.path.join(output_path, f'depth-images/{cam_name}', f"{cam_ts}.png")
+            cv2.imwrite(depth_img_path, normalized)
+            
+            if debug_mode:
+                print(f"  保存{cam_name}深度图: {depth_img_path}")
         
-        save_gray_depth(depth_map0, 'cam0', ts)
-        save_gray_depth(depth_map1, 'cam1', ts)
+        save_gray_depth(depth_map0, 'cam0')
+        save_gray_depth(depth_map1, 'cam1')
 
 if __name__ == "__main__":
     main()
-
